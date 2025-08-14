@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "log-archive-tool"
+version = "0.1.0"
+description = "CLI to archive logs into tar.gz with timestamped filenames and an audit log."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "yusufakajose" }
+]
+license = { text = "MIT" }
+keywords = ["logs", "archive", "cli", "tar.gz"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Environment :: Console",
+  "Topic :: System :: Archiving",
+]
+
+[project.scripts]
+log-archive = "log_archive.__main__:main"
