@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 import os
+import json
 import tarfile
 import time
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ ARCHIVE_PREFIX = "logs_archive_"
 ARCHIVE_EXT = ".tar.gz"
 DEFAULT_OUTPUT_DIR_NAME = "archives"
 AUDIT_LOG_NAME = "archive.log"
+MANIFEST_NAME = "manifest.json"
 
 
 def parse_args(argv: List[str]) -> argparse.Namespace:
@@ -49,6 +51,8 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 	group.add_argument("--retention-count", type=int, help="Keep only the most recent N archives")
 	parser.add_argument("--include", type=str, help="Comma-separated glob patterns to include")
 	parser.add_argument("--exclude", type=str, help="Comma-separated glob patterns to exclude")
+	parser.add_argument("--incremental", action="store_true", help="Archive only new/changed files since last run using a manifest")
+	parser.add_argument("--manifest", type=Path, help="Manifest file path (default: <output_dir>/manifest.json)")
 	parser.add_argument("--dry-run", action="store_true", help="Show planned actions without writing")
 	parser.add_argument("--verbose", action="store_true", help="Verbose console output")
 	return parser.parse_args(argv)
@@ -70,6 +74,34 @@ def split_patterns(csv: str | None) -> List[str]:
 	if not csv:
 		return []
 	return [p.strip() for p in csv.split(",") if p.strip()]
+
+
+def relative_str(path: Path, root: Path) -> str:
+	return str(path.relative_to(root))
+
+
+def compute_state(path: Path) -> Dict[str, Any]:
+	st = path.stat()
+	return {
+		"size": int(st.st_size),
+		"mtime_ns": int(st.st_mtime_ns),
+	}
+
+
+def load_manifest(path: Path) -> Dict[str, Dict[str, Any]]:
+	try:
+		with path.open("r", encoding="utf-8") as fh:
+			data = json.load(fh)
+			return data if isinstance(data, dict) else {}
+	except FileNotFoundError:
+		return {}
+	except Exception:
+		return {}
+
+
+def write_manifest(path: Path, mapping: Dict[str, Dict[str, Any]]) -> None:
+	with path.open("w", encoding="utf-8") as fh:
+		json.dump(mapping, fh, indent=2, sort_keys=True)
 
 
 def load_config(explicit_path: Path | None) -> Dict[str, Any]:
@@ -256,6 +288,19 @@ def main(argv: List[str] | None = None) -> int:
 
 	# Enumerate files to include
 	files = enumerate_files(log_dir, output_dir, audit_log_path, include_patterns, exclude_patterns)
+
+	# Incremental filtering using manifest
+	manifest_path = args.manifest or (output_dir / MANIFEST_NAME)
+	manifest = load_manifest(manifest_path)
+	if args.incremental and manifest:
+		filtered: List[Path] = []
+		for f in files:
+			rel = relative_str(f, log_dir)
+			prev = manifest.get(rel)
+			cur = compute_state(f)
+			if prev != cur:
+				filtered.append(f)
+		files = filtered
 	if args.verbose:
 		print(f"Found {len(files)} files to archive")
 		for f in files[:50]:
@@ -282,6 +327,14 @@ def main(argv: List[str] | None = None) -> int:
 		duration_ms = create_archive(log_dir, files, archive_path)
 		file_count, size_bytes = compute_file_count_and_size(archive_path)
 		write_audit_line(audit_log_path, now, archive_name, file_count, size_bytes, duration_ms)
+		# Update manifest after successful archive
+		if args.incremental:
+			new_manifest: Dict[str, Dict[str, Any]] = {}
+			# Always rescan full set (not only archived files) to capture current state
+			for f in enumerate_files(log_dir, output_dir, audit_log_path, include_patterns, exclude_patterns):
+				rel = relative_str(f, log_dir)
+				new_manifest[rel] = compute_state(f)
+			write_manifest(manifest_path, new_manifest)
 		if args.verbose:
 			print(f"Created {archive_path} ({file_count} files, {human_size(size_bytes)}, {duration_ms} ms)")
 		# Apply retention policy after successful archive

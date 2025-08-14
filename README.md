@@ -10,7 +10,8 @@ pip install -e .
 ## Usage
 ```bash
 log-archive <log-directory> [--output-dir <dir>] [--retention-days N | --retention-count N] \
-  [--include "pat1,pat2"] [--exclude "pat3,pat4"] [--dry-run] [--verbose] [--config <path>]
+  [--include "pat1,pat2"] [--exclude "pat3,pat4"] [--dry-run] [--verbose] [--config <path>] \
+  [--incremental] [--manifest <path>]
 ```
 
 Example:
@@ -21,6 +22,17 @@ log-archive /var/log --retention-count 7
 - Archives are saved under `<log-directory>/archives` by default.
 - Audit log is appended at `<output-dir>/archive.log`.
 - Include/exclude accept glob patterns relative to `<log-directory>`.
+
+## Incremental mode
+Archive only files that changed since the last run. A manifest file records file size and modified time.
+
+- Enable: `--incremental`
+- Default manifest path: `<output_dir>/manifest.json` (override with `--manifest`)
+
+Example:
+```bash
+log-archive /var/log --incremental
+```
 
 ## Config file (TOML)
 You can set defaults so you don’t have to pass flags every time. Precedence: CLI > config > defaults.
