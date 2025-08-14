@@ -9,6 +9,8 @@ import tarfile
 import time
 from datetime import datetime, timezone
 from typing import Iterable, List, Set, Any, Dict
+import hashlib
+import subprocess
 
 try:
 	import tomllib  # Python 3.11+
@@ -55,6 +57,11 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 	parser.add_argument("--manifest", type=Path, help="Manifest file path (default: <output_dir>/manifest.json)")
 	parser.add_argument("--dry-run", action="store_true", help="Show planned actions without writing")
 	parser.add_argument("--verbose", action="store_true", help="Verbose console output")
+	# Integrity/security
+	parser.add_argument("--sha256", action="store_true", help="Write a .sha256 file next to the archive for integrity checks")
+	parser.add_argument("--gpg-encrypt", action="store_true", help="Encrypt archive with GPG (creates .gpg and removes plaintext)")
+	parser.add_argument("--gpg-recipients", type=str, help="Comma-separated GPG recipient emails/IDs for encryption")
+	parser.add_argument("--gpg-sign", action="store_true", help="Create a detached GPG signature (.sig) for the archive")
 	return parser.parse_args(argv)
 
 
@@ -209,6 +216,42 @@ def compute_file_count_and_size(archive_path: Path) -> tuple[int, int]:
 	return count, size
 
 
+def write_sha256(archive_path: Path) -> Path:
+	h = hashlib.sha256()
+	with archive_path.open("rb") as fh:
+		for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+			h.update(chunk)
+	digest = h.hexdigest()
+	sha_path = archive_path.with_suffix(archive_path.suffix + ".sha256")
+	with sha_path.open("w", encoding="utf-8") as out:
+		out.write(f"{digest}  {archive_path.name}\n")
+	return sha_path
+
+
+def run_gpg_encrypt(src: Path, recipients: List[str], verbose: bool) -> Path:
+	cmd = [
+		"gpg", "--batch", "--yes", "--trust-model", "tofu+pgp", "--encrypt",
+	]
+	for r in recipients:
+		cmd += ["--recipient", r]
+	cmd += ["--output", str(src.with_suffix(src.suffix + ".gpg")), str(src)]
+	if verbose:
+		print("Running:", " ".join(cmd))
+	subprocess.run(cmd, check=True)
+	enc = src.with_suffix(src.suffix + ".gpg")
+	# Remove plaintext after successful encryption
+	src.unlink(missing_ok=True)
+	return enc
+
+
+def run_gpg_sign(src: Path, verbose: bool) -> Path:
+	cmd = ["gpg", "--batch", "--yes", "--detach-sign", "--output", str(src.with_suffix(src.suffix + ".sig")), str(src)]
+	if verbose:
+		print("Running:", " ".join(cmd))
+	subprocess.run(cmd, check=True)
+	return src.with_suffix(src.suffix + ".sig")
+
+
 def write_audit_line(audit_log_path: Path, now: datetime, archive_name: str, file_count: int, size_bytes: int, duration_ms: int, error: str | None = None) -> None:
 	iso = now.isoformat()
 	local_str = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -327,6 +370,28 @@ def main(argv: List[str] | None = None) -> int:
 		duration_ms = create_archive(log_dir, files, archive_path)
 		file_count, size_bytes = compute_file_count_and_size(archive_path)
 		write_audit_line(audit_log_path, now, archive_name, file_count, size_bytes, duration_ms)
+		# Integrity: SHA256 checksum
+		sha_path: Path | None = None
+		if args.sha256:
+			sha_path = write_sha256(archive_path)
+			if args.verbose:
+				print(f"Wrote checksum {sha_path}")
+		# Security: GPG operations
+		if args.gpg_encrypt:
+			recipients = [r.strip() for r in (args.gpg_recipients or "").split(",") if r.strip()]
+			if not recipients:
+				raise ValueError("--gpg-encrypt requires --gpg-recipients")
+			archive_path = run_gpg_encrypt(archive_path, recipients, args.verbose)
+			archive_name = archive_path.name
+			# If we created a checksum for the plaintext, regenerate for the .gpg
+			if args.sha256:
+				sha_path = write_sha256(archive_path)
+				if args.verbose:
+					print(f"Wrote checksum {sha_path}")
+		if args.gpg_sign:
+			sig_path = run_gpg_sign(archive_path, args.verbose)
+			if args.verbose:
+				print(f"Wrote signature {sig_path}")
 		# Update manifest after successful archive
 		if args.incremental:
 			new_manifest: Dict[str, Dict[str, Any]] = {}

@@ -11,7 +11,7 @@ pip install -e .
 ```bash
 log-archive <log-directory> [--output-dir <dir>] [--retention-days N | --retention-count N] \
   [--include "pat1,pat2"] [--exclude "pat3,pat4"] [--dry-run] [--verbose] [--config <path>] \
-  [--incremental] [--manifest <path>]
+  [--incremental] [--manifest <path>] [--sha256] [--gpg-encrypt] [--gpg-recipients <csv>] [--gpg-sign]
 ```
 
 Example:
@@ -33,6 +33,13 @@ Example:
 ```bash
 log-archive /var/log --incremental
 ```
+
+## Integrity and security
+- `--sha256`: Write a `<archive>.tar.gz.sha256` file with the checksum.
+- `--gpg-encrypt --gpg-recipients alice@example.com,bob@example.com`: Encrypt the archive to recipients and delete the plaintext.
+- `--gpg-sign`: Create a detached signature `<archive>.sig` (useful for verifying origin).
+
+Note: Requires `gpg` available and configured (keys present).
 
 ## Config file (TOML)
 You can set defaults so you don’t have to pass flags every time. Precedence: CLI > config > defaults.

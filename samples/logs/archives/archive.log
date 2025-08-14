@@ -2,3 +2,4 @@
 2025-08-14T04:53:18.895431+03:00 | local=2025-08-14 04:53:18 | archive=logs_archive_20250814_045318.tar.gz | files=2 | size=257.0B | duration_ms=13
 2025-08-14T05:00:47.294262+03:00 | local=2025-08-14 05:00:47 | archive=logs_archive_20250814_050047.tar.gz | files=2 | size=257.0B | duration_ms=5
 2025-08-14T05:00:51.256389+03:00 | local=2025-08-14 05:00:51 | archive=logs_archive_20250814_050051.tar.gz | files=0 | size=78.0B | duration_ms=1
+2025-08-14T05:07:13.403011+03:00 | local=2025-08-14 05:07:13 | archive=logs_archive_20250814_050713.tar.gz | files=2 | size=257.0B | duration_ms=6
