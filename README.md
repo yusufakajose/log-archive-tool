@@ -10,7 +10,7 @@ pip install -e .
 ## Usage
 ```bash
 log-archive <log-directory> [--output-dir <dir>] [--retention-days N | --retention-count N] \
-  [--include "pat1,pat2"] [--exclude "pat3,pat4"] [--dry-run] [--verbose]
+  [--include "pat1,pat2"] [--exclude "pat3,pat4"] [--dry-run] [--verbose] [--config <path>]
 ```
 
 Example:
@@ -21,6 +21,27 @@ log-archive /var/log --retention-count 7
 - Archives are saved under `<log-directory>/archives` by default.
 - Audit log is appended at `<output-dir>/archive.log`.
 - Include/exclude accept glob patterns relative to `<log-directory>`.
+
+## Config file (TOML)
+You can set defaults so you don’t have to pass flags every time. Precedence: CLI > config > defaults.
+
+Search order if `--config` not provided:
+1. `$LOG_ARCHIVE_CONFIG`
+2. `$XDG_CONFIG_HOME/log-archive/config.toml`
+3. `~/.config/log-archive/config.toml`
+
+Example `~/.config/log-archive/config.toml`:
+```toml
+log_directory = "/var/log"
+output_dir    = "/var/log/archives"
+
+include = ["*.log", "nginx/**"]
+exclude = ["archives/**", "*.tmp"]
+
+# choose one:
+retention_days  = 14
+# retention_count = 7
+```
 
 ## Scheduling
 

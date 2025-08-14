@@ -3,10 +3,19 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+import os
 import tarfile
 import time
 from datetime import datetime, timezone
-from typing import Iterable, List, Set
+from typing import Iterable, List, Set, Any, Dict
+
+try:
+	import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+	try:
+		import tomli as tomllib  # type: ignore
+	except ModuleNotFoundError:
+		tomllib = None  # type: ignore
 
 
 ARCHIVE_PREFIX = "logs_archive_"
@@ -20,9 +29,15 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 		description="Archive logs into a timestamped tar.gz and append an audit entry.",
 	)
 	parser.add_argument(
+		"--config",
+		type=Path,
+		help="Path to a TOML config file. If omitted, searches XDG paths.",
+	)
+	parser.add_argument(
 		"log_directory",
 		type=Path,
-		help="Directory containing logs to archive",
+		nargs="?",
+		help="Directory containing logs to archive (optional if provided via config)",
 	)
 	parser.add_argument(
 		"--output-dir",
@@ -55,6 +70,41 @@ def split_patterns(csv: str | None) -> List[str]:
 	if not csv:
 		return []
 	return [p.strip() for p in csv.split(",") if p.strip()]
+
+
+def load_config(explicit_path: Path | None) -> Dict[str, Any]:
+	"""Load TOML config from explicit path or XDG defaults.
+
+	Order of precedence:
+	1) --config path if provided
+	2) $LOG_ARCHIVE_CONFIG if set (file path)
+	3) $XDG_CONFIG_HOME/log-archive/config.toml
+	4) ~/.config/log-archive/config.toml
+	"""
+	paths: List[Path] = []
+	if explicit_path:
+		paths.append(explicit_path)
+	else:
+		env_path = os.environ.get("LOG_ARCHIVE_CONFIG")
+		if env_path:
+			paths.append(Path(env_path))
+		xdg = os.environ.get("XDG_CONFIG_HOME")
+		if xdg:
+			paths.append(Path(xdg) / "log-archive" / "config.toml")
+		paths.append(Path.home() / ".config" / "log-archive" / "config.toml")
+
+	for p in paths:
+		if p and p.is_file():
+			if tomllib is None:
+				return {}
+			with p.open("rb") as fh:
+				try:
+					data = tomllib.load(fh)  # type: ignore[arg-type]
+					d = data if isinstance(data, dict) else {}
+					return d
+				except Exception:
+					return {}
+	return {}
 
 
 def should_exclude(path: Path, root: Path, builtin_exclusions: Set[Path], include_patterns: List[str], exclude_patterns: List[str]) -> bool:
@@ -166,6 +216,14 @@ def apply_retention(output_dir: Path, retention_days: int | None, retention_coun
 
 def main(argv: List[str] | None = None) -> int:
 	args = parse_args(argv or sys.argv[1:])
+	config = load_config(args.config)
+
+	# Determine log directory: CLI overrides config
+	config_log_dir = config.get("log_directory") if isinstance(config.get("log_directory"), str) else None
+	if args.log_directory is None and not config_log_dir:
+		print("Error: log_directory not provided (CLI or config)", file=sys.stderr)
+		return 2
+	log_dir = (args.log_directory or Path(config_log_dir)).resolve()  # type: ignore[arg-type]
 	# Validate retention parameters
 	if args.retention_days is not None and args.retention_days <= 0:
 		print("--retention-days must be a positive integer", file=sys.stderr)
@@ -173,15 +231,20 @@ def main(argv: List[str] | None = None) -> int:
 	if args.retention_count is not None and args.retention_count <= 0:
 		print("--retention-count must be a positive integer", file=sys.stderr)
 		return 2
-	log_dir = args.log_directory.resolve()
 	if not log_dir.exists() or not log_dir.is_dir():
 		print(f"Error: {log_dir} is not a directory", file=sys.stderr)
 		return 2
 
-	output_dir = resolve_output_dir(log_dir, args.output_dir)
+	# Output dir: CLI overrides config
+	config_output_dir = config.get("output_dir") if isinstance(config.get("output_dir"), str) else None
+	output_dir = resolve_output_dir(log_dir, args.output_dir or (Path(config_output_dir) if config_output_dir else None))
 	audit_log_path = output_dir / AUDIT_LOG_NAME
-	include_patterns = split_patterns(args.include)
-	exclude_patterns = split_patterns(args.exclude)
+
+	# Patterns: merge config defaults with CLI overrides
+	cfg_include = config.get("include") if isinstance(config.get("include"), list) else []
+	cfg_exclude = config.get("exclude") if isinstance(config.get("exclude"), list) else []
+	include_patterns = split_patterns(args.include) or [str(x) for x in cfg_include if isinstance(x, str)]
+	exclude_patterns = split_patterns(args.exclude) or [str(x) for x in cfg_exclude if isinstance(x, str)]
 
 	# Ensure output directory exists
 	if not args.dry_run:
@@ -199,6 +262,15 @@ def main(argv: List[str] | None = None) -> int:
 			print(f"  + {f.relative_to(log_dir)}")
 		if len(files) > 50:
 			print("  + ...")
+
+	# Retention from config if CLI not provided
+	if args.retention_days is None and args.retention_count is None:
+		cfg_days = config.get("retention_days") if isinstance(config.get("retention_days"), int) else None
+		cfg_count = config.get("retention_count") if isinstance(config.get("retention_count"), int) else None
+		if cfg_days is not None and cfg_days > 0:
+			args.retention_days = cfg_days
+		elif cfg_count is not None and cfg_count > 0:
+			args.retention_count = cfg_count
 
 	if args.dry_run:
 		# Show retention effect as well
