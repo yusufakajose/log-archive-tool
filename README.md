@@ -2,6 +2,16 @@
 
 CLI to archive logs from a directory into a timestamped `.tar.gz` and write an audit entry.
 
+## How it works
+- Scans your log directory, skipping the `archives/` subdir and audit log.
+- Creates a tarball `logs_archive_YYYYMMDD_HHMMSS.tar.gz` containing files it found.
+- Appends an entry to `archive.log` with timestamp, file count, size, and duration.
+- Optional features:
+  - Incremental: only add files changed since the last run (tracked in `manifest.json`).
+  - Retention: keep only last N archives or those newer than N days.
+  - Integrity/security: write a SHA256 checksum, encrypt with GPG, and/or sign.
+  - Config: default options via a TOML file.
+
 ## Install (editable local)
 ```bash
 pip install -e .
@@ -22,6 +32,42 @@ log-archive /var/log --retention-count 7
 - Archives are saved under `<log-directory>/archives` by default.
 - Audit log is appended at `<output-dir>/archive.log`.
 - Include/exclude accept glob patterns relative to `<log-directory>`.
+
+## Examples
+- Basic (archive everything):
+```bash
+log-archive /var/log
+```
+
+- Retention (keep 14 newest):
+```bash
+log-archive /var/log --retention-count 14
+```
+
+- Time-based retention (older than 7 days):
+```bash
+log-archive /var/log --retention-days 7
+```
+
+- Include/Exclude patterns:
+```bash
+log-archive /var/log --include "*.log,nginx/**" --exclude "*.tmp,archives/**"
+```
+
+- Incremental archiving:
+```bash
+log-archive /var/log --incremental
+```
+
+- Checksums and signing:
+```bash
+log-archive /var/log --sha256 --gpg-sign
+```
+
+- Encryption for recipients (then remove plaintext):
+```bash
+log-archive /var/log --gpg-encrypt --gpg-recipients alice@example.com,bob@example.com
+```
 
 ## Incremental mode
 Archive only files that changed since the last run. A manifest file records file size and modified time.
