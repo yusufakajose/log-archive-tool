@@ -166,6 +166,13 @@ def apply_retention(output_dir: Path, retention_days: int | None, retention_coun
 
 def main(argv: List[str] | None = None) -> int:
 	args = parse_args(argv or sys.argv[1:])
+	# Validate retention parameters
+	if args.retention_days is not None and args.retention_days <= 0:
+		print("--retention-days must be a positive integer", file=sys.stderr)
+		return 2
+	if args.retention_count is not None and args.retention_count <= 0:
+		print("--retention-count must be a positive integer", file=sys.stderr)
+		return 2
 	log_dir = args.log_directory.resolve()
 	if not log_dir.exists() or not log_dir.is_dir():
 		print(f"Error: {log_dir} is not a directory", file=sys.stderr)

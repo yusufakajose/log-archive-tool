@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.build/
+build/
+dist/
+
+# Local archives outside samples (prevent accidental tracking)
+archives/
