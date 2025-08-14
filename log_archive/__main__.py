@@ -9,6 +9,7 @@ import tarfile
 import time
 from datetime import datetime, timezone
 from typing import Iterable, List, Set, Any, Dict
+import shutil
 import hashlib
 import subprocess
 
@@ -22,7 +23,6 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 ARCHIVE_PREFIX = "logs_archive_"
-ARCHIVE_EXT = ".tar.gz"
 DEFAULT_OUTPUT_DIR_NAME = "archives"
 AUDIT_LOG_NAME = "archive.log"
 MANIFEST_NAME = "manifest.json"
@@ -55,6 +55,10 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 	parser.add_argument("--exclude", type=str, help="Comma-separated glob patterns to exclude")
 	parser.add_argument("--incremental", action="store_true", help="Archive only new/changed files since last run using a manifest")
 	parser.add_argument("--manifest", type=Path, help="Manifest file path (default: <output_dir>/manifest.json)")
+	# Compression options
+	parser.add_argument("--compression", choices=["gzip", "zstd", "none"], default="gzip", help="Compression algorithm to use (default: gzip)")
+	parser.add_argument("--compress-level", type=int, help="Compression level (algorithm-specific). If omitted, uses tool default")
+	parser.add_argument("--threads", type=int, default=1, help="Compression threads (1 = single-thread; 0 = auto for external tools)")
 	parser.add_argument("--dry-run", action="store_true", help="Show planned actions without writing")
 	parser.add_argument("--verbose", action="store_true", help="Verbose console output")
 	# Integrity/security
@@ -69,8 +73,13 @@ def _now() -> datetime:
 	return datetime.now().astimezone()
 
 
-def build_archive_name(now: datetime) -> str:
-	return f"{ARCHIVE_PREFIX}{now.strftime('%Y%m%d_%H%M%S')}{ARCHIVE_EXT}"
+def build_archive_name(now: datetime, compression: str) -> str:
+	ext = {
+		"gzip": ".tar.gz",
+		"zstd": ".tar.zst",
+		"none": ".tar",
+	}[compression]
+	return f"{ARCHIVE_PREFIX}{now.strftime('%Y%m%d_%H%M%S')}{ext}"
 
 
 def resolve_output_dir(log_directory: Path, output_dir: Path | None) -> Path:
@@ -184,14 +193,68 @@ def enumerate_files(log_directory: Path, output_dir: Path, audit_log_path: Path,
 	return files
 
 
-def create_archive(source_root: Path, files: Iterable[Path], dest_archive: Path) -> int:
+def create_archive(source_root: Path, files: Iterable[Path], dest_archive: Path, compression: str, level: int | None, threads: int, verbose: bool) -> int:
 	start = time.perf_counter()
-	with tarfile.open(dest_archive, mode="w:gz") as tar:
-		count = 0
-		for f in files:
-			arcname = f.relative_to(source_root)
-			tar.add(f, arcname=str(arcname), recursive=False)
-			count += 1
+	# Strategy:
+	# - gzip: use Python tarfile for simple case; otherwise create .tar then use pigz/gzip
+	# - zstd: create .tar then compress with zstd
+	# - none: create plain .tar
+
+	if compression == "gzip" and threads == 1 and level is None:
+		with tarfile.open(dest_archive, mode="w:gz") as tar:
+			for f in files:
+				arcname = f.relative_to(source_root)
+				tar.add(f, arcname=str(arcname), recursive=False)
+	else:
+		# Create uncompressed tar, then compress with external tool
+		tmp_tar = dest_archive
+		# Remove compressed suffix if present (e.g., .gz/.zst)
+		if tmp_tar.suffix in {".gz", ".zst"}:
+			tmp_tar = tmp_tar.with_suffix("")
+		# Ensure .tar suffix
+		if tmp_tar.suffix != ".tar":
+			tmp_tar = tmp_tar.with_suffix(".tar")
+		with tarfile.open(tmp_tar, mode="w") as tar:
+			for f in files:
+				arcname = f.relative_to(source_root)
+				tar.add(f, arcname=str(arcname), recursive=False)
+
+		if compression == "gzip":
+			exe = shutil.which("pigz") if threads != 1 else shutil.which("gzip")
+			if exe is None:
+				exe = "pigz" if threads != 1 else "gzip"
+			cmd = [exe]
+			if threads != 1 and exe.endswith("pigz"):
+				if threads > 0:
+					cmd += ["-p", str(threads)]
+			if level is not None:
+				cmd += [f"-{level}"]
+			cmd += [str(tmp_tar)]
+			if verbose:
+				print("Running:", " ".join(cmd))
+			subprocess.run(cmd, check=True)
+			# pigz/gzip replace .tar with .tar.gz
+			if dest_archive.suffix != ".gz":
+				# Ensure file ends up as dest_archive
+				produced = tmp_tar.with_suffix(tmp_tar.suffix + ".gz")
+				if produced != dest_archive:
+					produced.rename(dest_archive)
+		elif compression == "zstd":
+			exe = shutil.which("zstd") or "zstd"
+			cmd = [exe, "-q", "-f"]
+			if threads >= 0:
+				cmd += ["-T" + str(threads)]
+			if level is not None:
+				cmd += [f"-{level}"]
+			cmd += ["-o", str(dest_archive), str(tmp_tar)]
+			if verbose:
+				print("Running:", " ".join(cmd))
+			subprocess.run(cmd, check=True)
+			tmp_tar.unlink(missing_ok=True)
+		elif compression == "none":
+			if tmp_tar != dest_archive:
+				tmp_tar.rename(dest_archive)
+
 	elapsed_ms = int((time.perf_counter() - start) * 1000)
 	return elapsed_ms
 
@@ -207,13 +270,15 @@ def human_size(num_bytes: int) -> str:
 
 
 def compute_file_count_and_size(archive_path: Path) -> tuple[int, int]:
-	# Count members and report final archive size on disk
-	count = 0
-	with tarfile.open(archive_path, mode="r:gz") as tar:
-		for _ in tar:
-			count += 1
-	size = archive_path.stat().st_size
-	return count, size
+	# Try to read members for gzip/bz2/xz/plain tar; zstd will fall back to count=0
+	try:
+		with tarfile.open(archive_path, mode="r:*") as tar:
+			count = sum(1 for _ in tar)
+			size = archive_path.stat().st_size
+			return count, size
+	except tarfile.ReadError:
+		size = archive_path.stat().st_size
+		return 0, size
 
 
 def write_sha256(archive_path: Path) -> Path:
@@ -267,9 +332,14 @@ def write_audit_line(audit_log_path: Path, now: datetime, archive_name: str, fil
 		fh.write(line)
 
 
+
 def apply_retention(output_dir: Path, retention_days: int | None, retention_count: int | None, dry_run: bool, verbose: bool) -> None:
+	# Match all supported extensions
 	archives = sorted(
-		[p for p in output_dir.glob(f"{ARCHIVE_PREFIX}*{ARCHIVE_EXT}") if p.is_file()],
+		[
+			p for p in output_dir.glob(f"{ARCHIVE_PREFIX}*.*")
+			if p.is_file() and (p.suffix in {".gz", ".zst", ""} or p.suffixes[-2:] in [[".tar", ".gz"], [".tar", ".zst"], [".tar"]])
+		],
 		key=lambda p: p.stat().st_mtime,
 	)
 	to_delete: List[Path] = []
@@ -326,7 +396,7 @@ def main(argv: List[str] | None = None) -> int:
 		output_dir.mkdir(parents=True, exist_ok=True)
 
 	now = _now()
-	archive_name = build_archive_name(now)
+	archive_name = build_archive_name(now, args.compression)
 	archive_path = output_dir / archive_name
 
 	# Enumerate files to include
@@ -367,7 +437,7 @@ def main(argv: List[str] | None = None) -> int:
 		return 0
 
 	try:
-		duration_ms = create_archive(log_dir, files, archive_path)
+		duration_ms = create_archive(log_dir, files, archive_path, args.compression, args.compress_level, args.threads, args.verbose)
 		file_count, size_bytes = compute_file_count_and_size(archive_path)
 		write_audit_line(audit_log_path, now, archive_name, file_count, size_bytes, duration_ms)
 		# Integrity: SHA256 checksum

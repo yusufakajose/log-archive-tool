@@ -33,6 +33,26 @@ log-archive /var/log --retention-count 7
 - Audit log is appended at `<output-dir>/archive.log`.
 - Include/exclude accept glob patterns relative to `<log-directory>`.
 
+## Compression options
+- Algorithms: `--compression gzip|zstd|none` (default: gzip)
+- Level: `--compress-level N` (e.g., 1-9 for gzip, 1-19 for zstd)
+- Threads: `--threads N` (use `pigz` for gzip when N!=1; `zstd -T` for zstd)
+
+Examples:
+```bash
+# Faster gzip with multiple threads (requires pigz)
+log-archive /var/log --compression gzip --threads 4
+
+# Stronger gzip compression (slower)
+log-archive /var/log --compression gzip --compress-level 9
+
+# Use zstd (fast + good ratio)
+log-archive /var/log --compression zstd --compress-level 6 --threads 4
+
+# No compression (just .tar)
+log-archive /var/log --compression none
+```
+
 ## Examples
 - Basic (archive everything):
 ```bash
@@ -81,7 +101,7 @@ log-archive /var/log --incremental
 ```
 
 ## Integrity and security
-- `--sha256`: Write a `<archive>.tar.gz.sha256` file with the checksum.
+- `--sha256`: Write a `<archive>.sha256` file with the checksum.
 - `--gpg-encrypt --gpg-recipients alice@example.com,bob@example.com`: Encrypt the archive to recipients and delete the plaintext.
 - `--gpg-sign`: Create a detached signature `<archive>.sig` (useful for verifying origin).
 
