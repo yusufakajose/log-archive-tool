@@ -23,3 +23,10 @@ classifiers = [
 
 [project.scripts]
 log-archive = "log_archive.__main__:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["log_archive*"]
+exclude = ["samples*", "tests*"]
